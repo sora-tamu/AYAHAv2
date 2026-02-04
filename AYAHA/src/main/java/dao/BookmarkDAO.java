@@ -11,17 +11,21 @@ import java.util.List;
 import model.Playlist;
 import util.DBManager;
 
+/**
+ * ブックマーク（お気に入り）および参照先テーブルの操作用DAO
+ */
 public class BookmarkDAO {
 
     public BookmarkDAO() {
         try (Connection conn = DBManager.getConnection();
              Statement stmt = conn.createStatement()) {
             
-            // カラム名を playlist_id に統一して作成 [cite: 5]
+            // 1. bookmark_table の自動生成
+            // question_id は playlist_table の id を参照することを想定
             stmt.execute("CREATE TABLE IF NOT EXISTS bookmark_table (" +
                          "user_id INTEGER, " +
-                         "playlist_id INTEGER, " +
-                         "PRIMARY KEY (user_id, playlist_id))");
+                         "question_id INTEGER, " +
+                         "PRIMARY KEY (user_id, question_id))");
                          
         } catch (SQLException e) {
             System.err.println("BookmarkDAO初期化エラー: " + e.getMessage());
@@ -29,8 +33,11 @@ public class BookmarkDAO {
         }
     }
 
+    /**
+     * ブックマークの追加
+     */
     public void addBookmark(int userId, int playlistId) {
-        String sql = "INSERT OR IGNORE INTO bookmark_table (user_id, playlist_id) VALUES (?, ?)";
+        String sql = "INSERT OR IGNORE INTO bookmark_table (user_id, question_id) VALUES (?, ?)";
         try (Connection conn = DBManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setInt(1, userId);
@@ -41,8 +48,11 @@ public class BookmarkDAO {
         }
     }
 
+    /**
+     * ブックマークの削除
+     */
     public void removeBookmark(int userId, int playlistId) {
-        String sql = "DELETE FROM bookmark_table WHERE user_id = ? AND playlist_id = ?";
+        String sql = "DELETE FROM bookmark_table WHERE user_id = ? AND question_id = ?";
         try (Connection conn = DBManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setInt(1, userId);
@@ -53,8 +63,11 @@ public class BookmarkDAO {
         }
     }
 
+    /**
+     * ブックマーク済みかどうかの判定
+     */
     public boolean isBookmarked(int userId, int playlistId) {
-        String sql = "SELECT 1 FROM bookmark_table WHERE user_id = ? AND playlist_id = ?";
+        String sql = "SELECT 1 FROM bookmark_table WHERE user_id = ? AND question_id = ?";
         try (Connection conn = DBManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setInt(1, userId);
@@ -67,11 +80,16 @@ public class BookmarkDAO {
         }
     }
 
+    /**
+     * ユーザーがブックマークしたプレイリスト一覧を取得
+     * ★修正ポイント: QuestionDAOに合わせてテーブル名を「playlist_table」に変更
+     */
     public List<Playlist> getBookmarkedPlaylists(int userId) {
         List<Playlist> list = new ArrayList<>();
-        // playlist_table と結合して、画像パスや説明文も取得できるように修正 
+        
+        // 【重要】playlists ではなく playlist_table を指定
         String sql = "SELECT p.* FROM playlist_table p " +
-                     "INNER JOIN bookmark_table b ON p.id = b.playlist_id " +
+                     "INNER JOIN bookmark_table b ON p.id = b.question_id " +
                      "WHERE b.user_id = ?";
         
         try (Connection conn = DBManager.getConnection();
@@ -82,9 +100,7 @@ public class BookmarkDAO {
                     Playlist p = new Playlist();
                     p.setId(rs.getInt("id"));
                     p.setName(rs.getString("name"));
-                    p.setDescription(rs.getString("description"));
-                    p.setImagePath(rs.getString("image_path"));
-                    p.setUserId(rs.getInt("user_id"));
+                    // 必要に応じて created_at 等もセット
                     list.add(p);
                 }
             }

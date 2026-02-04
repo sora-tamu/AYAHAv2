@@ -26,10 +26,6 @@ public class QuestionDAO {
                          "name TEXT NOT NULL, " +
                          "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
             
-            // ★追加：既存のテーブルにSNS用のカラムがない場合に備えて拡張
-            try { stmt.execute("ALTER TABLE playlist_table ADD COLUMN description TEXT"); } catch (SQLException e) { /* 存在時は無視 */ }
-            try { stmt.execute("ALTER TABLE playlist_table ADD COLUMN image_path TEXT"); } catch (SQLException e) { /* 存在時は無視 */ }
-
             // 2. 問題テーブル
             stmt.execute("CREATE TABLE IF NOT EXISTS question_table (" +
                          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -51,8 +47,6 @@ public class QuestionDAO {
             // 3. タグ関連
             stmt.execute("CREATE TABLE IF NOT EXISTS tag_table (id INTEGER PRIMARY KEY AUTOINCREMENT, tag_name TEXT UNIQUE NOT NULL)");
             stmt.execute("CREATE TABLE IF NOT EXISTS question_tag_table (question_id INTEGER, tag_id INTEGER, PRIMARY KEY (question_id, tag_id))");
-            // ブックマークテーブル
-            stmt.execute("CREATE TABLE IF NOT EXISTS bookmark_table (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, playlist_id INTEGER)");
 
         } catch (SQLException e) {
             System.err.println("DB初期化エラー: " + e.getMessage());
@@ -64,12 +58,12 @@ public class QuestionDAO {
         return getMyPlaylists(userId);
     }
 
-    /** ユーザーが作成した全投稿（プレイリスト）を取得 */
+    /** ユーザーが作成したプレイリスト一覧を取得 */
     public List<Playlist> getMyPlaylists(int userId) {
         List<Playlist> results = new ArrayList<>();
-        String sql = "SELECT p.*, (SELECT COUNT(*) FROM question_table WHERE playlist_id = p.id) as q_count, " +
-                     "(SELECT COUNT(*) FROM bookmark_table WHERE playlist_id = p.id) as b_count " +
-                     "FROM playlist_table p WHERE p.user_id = ? ORDER BY p.id DESC";
+        String sql = "SELECT p.*, COUNT(q.id) as q_count FROM playlist_table p " +
+                     "LEFT JOIN question_table q ON p.id = q.playlist_id " +
+                     "WHERE p.user_id = ? GROUP BY p.id ORDER BY p.id DESC";
         try (Connection conn = DBManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setInt(1, userId);
@@ -78,10 +72,7 @@ public class QuestionDAO {
                     Playlist p = new Playlist();
                     p.setId(rs.getInt("id"));
                     p.setName(rs.getString("name"));
-                    p.setDescription(rs.getString("description"));
-                    p.setImagePath(rs.getString("image_path"));
                     p.setQuestionCount(rs.getInt("q_count"));
-                    p.setBookmarkCount(rs.getInt("b_count"));
                     results.add(p);
                 }
             }
@@ -89,7 +80,7 @@ public class QuestionDAO {
         return results;
     }
 
-    /** プレイリストを新規作成（ID返却用） */
+    /** プレイリストを新規作成 */
     public int createPlaylist(String name, int userId) {
         String sql = "INSERT INTO playlist_table(name, user_id) VALUES(?, ?)";
         try (Connection conn = DBManager.getConnection();
@@ -102,19 +93,6 @@ public class QuestionDAO {
             }
         } catch (SQLException e) { e.printStackTrace(); }
         return -1;
-    }
-
-    /** SNS投稿用：タイトル空文字を許容する新規作成メソッド */
-    public void createPlaylist(Playlist p) {
-        String sql = "INSERT INTO playlist_table (user_id, name, description, image_path) VALUES (?, ?, ?, ?)";
-        try (Connection conn = DBManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setInt(1, p.getUserId());
-            pstmt.setString(2, p.getName() != null ? p.getName() : ""); 
-            pstmt.setString(3, p.getDescription());
-            pstmt.setString(4, p.getImagePath());
-            pstmt.executeUpdate();
-        } catch (SQLException e) { e.printStackTrace(); }
     }
 
     /** 問題保存（タグも保存） */
@@ -183,20 +161,15 @@ public class QuestionDAO {
         boolean hasKeyword = (keyword != null && !keyword.trim().isEmpty());
         
         StringBuilder sql = new StringBuilder();
-        sql.append("SELECT DISTINCT p.*, u.user_name, ")
-           .append("(SELECT COUNT(*) FROM question_table WHERE playlist_id = p.id) as q_count, ")
-           .append("(SELECT COUNT(*) FROM bookmark_table WHERE playlist_id = p.id) as b_count ")
-           .append("FROM playlist_table p ")
-           .append("JOIN user_table u ON p.user_id = u.id ")
-           .append("LEFT JOIN question_table q ON p.id = q.playlist_id ")
-           .append("LEFT JOIN question_tag_table qtt ON q.id = qtt.question_id ")
-           .append("LEFT JOIN tag_table t ON qtt.tag_id = t.id ")
-           .append("WHERE (q.is_public = 1 OR q.is_public IS NULL) ");
-        
+        sql.append("SELECT DISTINCT p.id, p.name, (SELECT COUNT(*) FROM question_table WHERE playlist_id = p.id) as q_count FROM playlist_table p ");
+        sql.append("JOIN question_table q ON p.id = q.playlist_id ");
+        sql.append("LEFT JOIN question_tag_table qtt ON q.id = qtt.question_id ");
+        sql.append("LEFT JOIN tag_table t ON qtt.tag_id = t.id ");
+        sql.append("WHERE q.is_public = 1 ");
         if (hasKeyword) {
             sql.append("AND (p.name LIKE ? OR t.tag_name LIKE ? OR q.title LIKE ?) ");
         }
-        sql.append("GROUP BY p.id ORDER BY p.created_at DESC");
+        sql.append("ORDER BY p.id DESC");
 
         try (Connection conn = DBManager.getConnection(); 
              PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
@@ -211,11 +184,7 @@ public class QuestionDAO {
                     Playlist p = new Playlist();
                     p.setId(rs.getInt("id"));
                     p.setName(rs.getString("name"));
-                    p.setDescription(rs.getString("description"));
-                    p.setImagePath(rs.getString("image_path"));
-                    p.setUserName(rs.getString("user_name"));
                     p.setQuestionCount(rs.getInt("q_count"));
-                    p.setBookmarkCount(rs.getInt("b_count"));
                     results.add(p);
                 }
             }
@@ -284,11 +253,14 @@ public class QuestionDAO {
         } catch (SQLException e) { e.printStackTrace(); }
     }
 
+    /** * 修正案２：引数1つだけの古い呼び出し方に対応させるためのメソッド
+     * 内部でタグを null として、引数2つの updateQuestion を呼び出します。
+     */
     public boolean updateQuestion(Question q) {
         return updateQuestion(q, null);
     }
 
-    /** 問題の更新 */
+    /** 問題の更新（選択肢とタグの更新に対応） */
     public boolean updateQuestion(Question q, String[] tags) {
         String sql = "UPDATE question_table SET title=?, content=?, answer=?, choice_1=?, choice_2=?, choice_3=?, explanation=?, is_public=? WHERE id=?";
         try (Connection conn = DBManager.getConnection()) {
@@ -306,6 +278,7 @@ public class QuestionDAO {
                 
                 int rows = pstmt.executeUpdate();
 
+                // タグの更新：一度消して登録し直す
                 if (tags != null) {
                     try (PreparedStatement delPstmt = conn.prepareStatement("DELETE FROM question_tag_table WHERE question_id = ?")) {
                         delPstmt.setInt(1, q.getId());
@@ -358,84 +331,6 @@ public class QuestionDAO {
                 p1.setString(1, name); p1.executeUpdate();
                 p2.setInt(1, questionId); p2.setString(2, name); p2.executeUpdate();
             }
-        }
-    }
-
-    /** タイムライン用：最新投稿取得 */
-    public List<Playlist> getPublicPlaylists() {
-        return searchQuestions(null);
-    }
-
-    /** タイムライン取得用別名メソッド */
-    public List<Playlist> getAllPublicPlaylists() {
-        return searchQuestions(null);
-    }
-
-    /** 特定のプレイリストのブックマーク数を取得 */
-    public int getBookmarkCount(int playlistId) {
-        String sql = "SELECT COUNT(*) FROM bookmark_table WHERE playlist_id = ?";
-        try (Connection conn = DBManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setInt(1, playlistId);
-            try (ResultSet rs = pstmt.executeQuery()) {
-                if (rs.next()) return rs.getInt(1);
-            }
-        } catch (SQLException e) { e.printStackTrace(); }
-        return 0;
-    }
-
-    /** ユーザーがブックマーク（いいね）したプレイリスト一覧を取得 */
-    public List<Playlist> getBookmarkedPlaylists(int userId) {
-        List<Playlist> results = new ArrayList<>();
-        String sql = "SELECT p.*, u.user_name, " +
-                     "(SELECT COUNT(*) FROM question_table WHERE playlist_id = p.id) as q_count, " +
-                     "(SELECT COUNT(*) FROM bookmark_table WHERE playlist_id = p.id) as b_count " +
-                     "FROM playlist_table p " +
-                     "JOIN user_table u ON p.user_id = u.id " +
-                     "JOIN bookmark_table b ON p.id = b.playlist_id " +
-                     "WHERE b.user_id = ? " +
-                     "ORDER BY p.id DESC";
-
-        try (Connection conn = DBManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setInt(1, userId);
-            try (ResultSet rs = pstmt.executeQuery()) {
-                while (rs.next()) {
-                    Playlist p = new Playlist();
-                    p.setId(rs.getInt("id"));
-                    p.setName(rs.getString("name"));
-                    p.setDescription(rs.getString("description"));
-                    p.setImagePath(rs.getString("image_path"));
-                    p.setUserName(rs.getString("user_name"));
-                    p.setQuestionCount(rs.getInt("q_count"));
-                    p.setBookmarkCount(rs.getInt("b_count"));
-                    results.add(p);
-                }
-            }
-        } catch (SQLException e) { e.printStackTrace(); }
-        return results;
-    }
- // 指定した投稿（プレイリスト）を削除する
-    public void deletePlaylist(int playlistId, int userId) {
-        // 1. まずそのプレイリストに紐付いているブックマークを削除
-        String deleteBookmarksSql = "DELETE FROM bookmark_table WHERE playlist_id = ?";
-        // 2. 次にプレイリスト本体を削除（本人確認のため user_id も条件に含める）
-        String deletePlaylistSql = "DELETE FROM playlist_table WHERE id = ? AND user_id = ?";
-
-        try (Connection conn = DBManager.getConnection()) {
-            // ブックマーク削除
-            try (PreparedStatement pstmt1 = conn.prepareStatement(deleteBookmarksSql)) {
-                pstmt1.setInt(1, playlistId);
-                pstmt1.executeUpdate();
-            }
-            // 本体削除
-            try (PreparedStatement pstmt2 = conn.prepareStatement(deletePlaylistSql)) {
-                pstmt2.setInt(1, playlistId);
-                pstmt2.setInt(2, userId);
-                pstmt2.executeUpdate();
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
         }
     }
 }
