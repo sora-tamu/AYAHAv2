@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: chokori-app
+    ports:
+      - "8080:8080"
+    volumes:
+      # 手元のファイルを編集したら即反映されるように同期
+      - ./src/main/webapp:/usr/local/tomcat/webapps/ROOT
+    restart: always
